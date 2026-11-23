@@ -51,6 +51,69 @@ type PathConfig struct {
 	Ignore IgnorePatterns `yaml:"ignore"`
 }
 
+// ActionPinningLevel is the minimum strictness required for remote action and workflow refs.
+type ActionPinningLevel uint8
+
+const (
+	// ActionPinningLevelMajorMinor accepts minor versions, semantic versions, and commit SHAs.
+	ActionPinningLevelMajorMinor ActionPinningLevel = iota
+	// ActionPinningLevelSemver accepts complete semantic versions and commit SHAs.
+	ActionPinningLevelSemver
+	// ActionPinningLevelCommitSHA accepts only full lowercase commit SHAs.
+	ActionPinningLevelCommitSHA
+)
+
+// String returns the configuration value for the level.
+func (level ActionPinningLevel) String() string {
+	switch level {
+	case ActionPinningLevelMajorMinor:
+		return "major-minor"
+	case ActionPinningLevelSemver:
+		return "semver"
+	case ActionPinningLevelCommitSHA:
+		return "commit-sha"
+	default:
+		return "unknown"
+	}
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (level *ActionPinningLevel) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode && n.Tag == "!!str" {
+		switch n.Value {
+		case "major-minor":
+			*level = ActionPinningLevelMajorMinor
+			return nil
+		case "semver":
+			*level = ActionPinningLevelSemver
+			return nil
+		case "commit-sha":
+			*level = ActionPinningLevelCommitSHA
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid action-pinning level %q at line:%d,col:%d: expected \"major-minor\", \"semver\", or \"commit-sha\"", n.Value, n.Line, n.Column)
+}
+
+// ActionPinningConfig enables pinning checks and configures their minimum strictness.
+type ActionPinningConfig struct {
+	Level ActionPinningLevel `yaml:"level"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler, defaulting an omitted level to semver.
+func (cfg *ActionPinningConfig) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("\"action-pinning\" must be a mapping at line:%d,col:%d", n.Line, n.Column)
+	}
+	type plain ActionPinningConfig
+	c := plain{Level: ActionPinningLevelSemver}
+	if err := n.Decode(&c); err != nil {
+		return err
+	}
+	*cfg = ActionPinningConfig(c)
+	return nil
+}
+
 // Config is configuration of actionlint. This struct instance is parsed from "actionlint.yaml"
 // file usually put in ".github" directory.
 type Config struct {
@@ -64,6 +127,8 @@ type Config struct {
 	// listed here as undefined config variables.
 	// https://docs.github.com/en/actions/learn-github-actions/variables
 	ConfigVariables []string `yaml:"config-variables"`
+	// ActionPinning checks remote uses references when non-nil. Nil disables the rule.
+	ActionPinning *ActionPinningConfig `yaml:"action-pinning"`
 	// Paths is a "paths" mapping in the configuration file. The keys are glob patterns to match file paths.
 	// And the values are corresponding configurations applied to the file paths.
 	Paths map[string]PathConfig `yaml:"paths"`
@@ -142,6 +207,10 @@ func writeDefaultConfigFile(path string) error {
 # organization. ` + "`null`" + ` means disabling configuration variables check.
 # Empty array means no configuration variable is allowed.
 config-variables: null
+
+# Pin remote actions and reusable workflows. null disables the check.
+# Use {} for the default semver level, or set level to major-minor, semver, or commit-sha.
+action-pinning: null
 
 # Configuration for file paths. The keys are glob patterns to match to file
 # paths relative to the repository root. The values are the configurations for

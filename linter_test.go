@@ -82,6 +82,95 @@ func TestLinterLintOK(t *testing.T) {
 	}
 }
 
+func TestLinterActionPinning(t *testing.T) {
+	const workflow = `on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/action@v1.2
+      - uses: owner/action/path@v1.2.3-rc.1
+      - uses: owner/action@0123456789abcdef0123456789abcdef01234567
+      - uses: docker://alpine:latest
+  reuse:
+    uses: owner/repo/.github/workflows/test.yml@v1.2
+  prerelease:
+    uses: owner/repo/.github/workflows/test.yml@v1.2.3-rc.1
+  commit:
+    uses: owner/repo/.github/workflows/test.yml@0123456789abcdef0123456789abcdef01234567
+`
+	for _, tc := range []struct {
+		config string
+		lines  []int
+	}{
+		{config: ""},
+		{config: "action-pinning: null"},
+		{config: "action-pinning: {}", lines: []int{6, 11}},
+		{config: "action-pinning: {level: major-minor}"},
+		{config: "action-pinning: {level: semver}", lines: []int{6, 11}},
+		{config: "action-pinning: {level: commit-sha}", lines: []int{6, 7, 11, 13}},
+	} {
+		t.Run(tc.config, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "actionlint.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.config), 0644); err != nil {
+				t.Fatal(err)
+			}
+			linter, err := NewLinter(io.Discard, &LinterOptions{ConfigFile: configPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			errs, err := linter.Lint("test.yaml", []byte(workflow), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(errs) != len(tc.lines) {
+				t.Fatalf("wanted errors at lines %v, got %v", tc.lines, errs)
+			}
+			for i, e := range errs {
+				column := 11
+				if e.Line < 10 {
+					column = 15
+				}
+				if e.Kind != "action-pinning" || e.Line != tc.lines[i] || e.Column != column {
+					t.Errorf("unexpected diagnostic: %v", e)
+				}
+			}
+		})
+	}
+}
+
+func TestLinterActionPinningExpressions(t *testing.T) {
+	const workflow = `on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/action@${{ 'v1.2.3' }}
+      - uses: ${{ 'owner/action' }}@main
+  reuse:
+    uses: owner/repo/.github/workflows/test.yml@${{ 'v1.2.3' }}
+  dynamic:
+    uses: ${{ 'owner/repo' }}/.github/workflows/test.yml@main
+`
+	linter, err := NewLinter(io.Discard, &LinterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linter.defaultConfig = &Config{ActionPinning: &ActionPinningConfig{Level: ActionPinningLevelSemver}}
+	errs, err := linter.Lint("test.yaml", []byte(workflow), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 2 {
+		t.Fatalf("wanted two unverifiable refs, got %v", errs)
+	}
+	for i, line := range []int{6, 9} {
+		if e := errs[i]; e.Kind != "action-pinning" || e.Line != line || !strings.Contains(e.Message, "cannot be verified") {
+			t.Errorf("unexpected diagnostic: %v", e)
+		}
+	}
+}
+
 func testFindAllWorkflowsInDir(subdir string) (string, []string, error) {
 	dir := filepath.Join("testdata", subdir)
 

@@ -27,6 +27,7 @@ List of checks:
 - [CRON syntax check at `schedule:`](#check-cron-syntax)
 - [Runner labels](#check-runner-labels)
 - [Action format in `uses:`](#check-action-format)
+- [Version pinning in `uses:`](#version-pinning)
 - [Local action inputs validation at `with:`](#check-local-action-inputs)
 - [Popular action inputs validation at `with:`](#check-popular-action-inputs)
 - [Outdated popular actions detection at `uses:`](#detect-outdated-popular-actions)
@@ -1753,6 +1754,50 @@ actionlint checks values at `uses:` sections follow one of these formats.
 Note that actionlint does not report any error when a directory for a local action does not exist in the repository because it is
 a common case where the action is managed in a separate repository and the action directory is cloned at running the workflow.
 (See [#25][issue-25] and [#40][issue-40] for more details).
+
+### Version pinning
+
+The optional `action-pinning` rule checks remote references in both `jobs.<job_id>.steps[*].uses` and
+`jobs.<job_id>.uses`. It is disabled by default. Enable it in `.github/actionlint.yaml`:
+
+```yaml
+action-pinning: {} # Equivalent to {level: semver}
+```
+
+Levels are ordered by strictness. Stronger pins satisfy weaker levels:
+
+| Ref | `major-minor` | `semver` (default) | `commit-sha` |
+| --- | --- | --- | --- |
+| `main`, `release`, `v1` | Error | Error | Error |
+| `v1.2` | OK | Error | Error |
+| `v1.2.3`, `v1.2.3-rc.1` | OK | OK | Error |
+| Full 40-character lowercase hexadecimal SHA | OK | OK | OK |
+
+Versions may omit the `v` prefix. Semantic versions may include build metadata. Local references starting with `./`
+and Docker references starting with `docker://` are skipped entirely.
+
+With the default `semver` level, these examples apply to actions and reusable workflows:
+
+```yaml
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/action@v1.2.3 # OK
+      - uses: owner/action@v1.2 # Error: requires a full semantic version or commit SHA
+      - uses: owner/action@${{ github.ref }} # Error: version pinning cannot be verified
+      - uses: ${{ github.repository }} # Skipped: the action name is dynamic
+      - uses: docker://alpine:latest # Skipped
+  reuse:
+    uses: owner/repo/.github/workflows/ci.yml@v1.2.3-rc.1 # OK
+```
+
+Diagnostics point to the `uses:` value and have kind `action-pinning`. Setting `action-pinning: null` disables the rule.
+Skipping a dynamic action name only skips this rule; the existing expression syntax and context checks still apply.
+The checks validate ref syntax offline, without resolving refs remotely. A version tag can move; use `commit-sha` when
+immutable pinning is required. Pinning does not extend the popular-action metadata database, so input/output checks
+remain limited to refs present in that database.
 
 <a id="check-local-action-inputs"></a>
 ## Local action inputs validation at `with:`

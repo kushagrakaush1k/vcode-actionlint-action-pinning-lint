@@ -9,6 +9,46 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+func TestConfigActionPinning(t *testing.T) {
+	for _, tc := range []struct {
+		input   string
+		enabled bool
+		level   ActionPinningLevel
+	}{
+		{input: ""},
+		{input: "action-pinning: null"},
+		{input: "action-pinning:"},
+		{input: "action-pinning: {}", enabled: true, level: ActionPinningLevelSemver},
+		{input: "action-pinning: {level: major-minor}", enabled: true, level: ActionPinningLevelMajorMinor},
+		{input: "action-pinning: {level: semver}", enabled: true, level: ActionPinningLevelSemver},
+		{input: "action-pinning: {level: commit-sha}", enabled: true, level: ActionPinningLevelCommitSHA},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			cfg, err := ParseConfig([]byte(tc.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.ActionPinning != nil) != tc.enabled {
+				t.Fatalf("wanted enabled=%v, got %#v", tc.enabled, cfg.ActionPinning)
+			}
+			if tc.enabled && cfg.ActionPinning.Level != tc.level {
+				t.Fatalf("wanted level %v, got %v", tc.level, cfg.ActionPinning.Level)
+			}
+		})
+	}
+	for _, input := range []string{
+		"action-pinning: true", "action-pinning: false", "action-pinning: []", "action-pinning: semver",
+		"action-pinning: {level: major}", "action-pinning: {level: unknown}", "action-pinning: {level: ''}",
+		"action-pinning: {level: 1}", "action-pinning: {level: false}", "action-pinning: {level: []}",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := ParseConfig([]byte(input)); err == nil || !strings.Contains(err.Error(), "action-pinning") {
+				t.Fatalf("wanted action-pinning configuration error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigParseSelfHostedRunnerOK(t *testing.T) {
 	testCases := []struct {
 		what   string
@@ -274,6 +314,9 @@ func TestConfigGenerateDefaultConfigFileOK(t *testing.T) {
 	}
 	if len(c.Paths) != 0 {
 		t.Fatal(c.Paths)
+	}
+	if c.ActionPinning != nil {
+		t.Fatal("action pinning must be disabled in the generated default config")
 	}
 }
 

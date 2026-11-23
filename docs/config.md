@@ -28,6 +28,11 @@ config-variables:
   - JOB_NAME
   - ENVIRONMENT_STAGE
 
+# Optional remote action and reusable workflow pinning checks.
+# null disables the rule; {} enables it with level: semver.
+action-pinning:
+  level: semver
+
 # Path-specific configurations.
 paths:
   # Glob pattern relative to the repository root for matching files. The path separator is always '/'.
@@ -49,6 +54,18 @@ paths:
     is available.
 - `config-variables`: [Configuration variables][vars]. When an array is set, actionlint will check `vars` properties strictly.
   An empty array means no variable is allowed. The default value `null` disables the check.
+- `action-pinning`: Check version pinning for remote step actions and job-level reusable workflows. Omitted or `null`
+  disables the rule; `{}` enables it with the default `semver` level.
+  - `level`: One of `major-minor`, `semver` (default), or `commit-sha`, in increasing order of strictness. A ref accepted at a
+    stricter level is also accepted at every weaker level. Other values are configuration errors.
+    - `major-minor`: At least a major and minor version, such as `v1.2`.
+    - `semver`: A complete major, minor, and patch version, such as `v1.2.3`. Prerelease and build metadata are allowed,
+      such as `v1.2.3-rc.1+build.7`. The `v` prefix is optional for both version levels.
+    - `commit-sha`: Exactly 40 lowercase hexadecimal characters.
+  Local references starting with `./` and Docker references starting with `docker://` are skipped. Expressions in the
+  repository or action name are skipped; expressions only in the ref produce a "cannot be verified" diagnostic.
+  This rule validates ref syntax offline; it does not verify that a tag or commit exists remotely. See
+  [version pinning](checks.md#version-pinning) for examples.
 - `paths`: Configurations for specific file path patterns. This is a mapping from a glob pattern and the corresponding
   configuration.
   - `{glob}`: A file path glob pattern to apply the configuration. The path separator is always '/'. It is matched to the

@@ -571,6 +571,9 @@ func (l *Linter) check(
 			NewRuleDeprecatedCommands(),
 			NewRuleIfCond(),
 		}
+		if cfg != nil && cfg.ActionPinning != nil {
+			rules = append(rules, NewRuleActionPinning())
+		}
 		if l.shellcheck != "" {
 			r, err := NewRuleShellcheck(l.shellcheck, proc)
 			if err == nil {
