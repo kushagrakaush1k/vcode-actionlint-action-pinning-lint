@@ -171,6 +171,67 @@ jobs:
 	}
 }
 
+func TestLinterActionPinningPathMerging(t *testing.T) {
+	const source = `action-pinning:
+  allowed-owners: [global]
+  allowed-actions: [global-action/repo]
+paths:
+  '.github/workflows/*.yml':
+    action-pinning:
+      level: major-minor
+      allowed-owners: [path]
+  '**/ci.yml':
+    action-pinning:
+      allowed-actions: [path-action/repo]
+`
+	const workflow = `on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: global/repo@main
+      - uses: global-action/repo/subpath@main
+      - uses: path/repo@main
+      - uses: path-action/repo/subpath@main
+      - uses: other/repo@v1.2
+  reuse:
+    uses: path-action/repo/.github/workflows/ci.yml@main
+`
+	cfg, err := ParseConfig([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	linter, err := NewLinter(io.Discard, &LinterOptions{WorkingDir: filepath.Join(root, ".github")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := &Project{root: root, config: cfg}
+	for _, path := range []string{"workflows/ci.yml", "workflows/other.yml"} {
+		errs, err := linter.Lint(path, []byte(workflow), project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if strings.HasSuffix(path, "other.yml") {
+			want = 2 // The allow list from **/ci.yml does not apply here.
+		}
+		if len(errs) != want {
+			t.Fatalf("wanted %d errors for %s, got %v", want, path, errs)
+		}
+	}
+	if cfg.ActionPinning.Level != ActionPinningLevelSemver || len(cfg.ActionPinning.AllowedOwners) != 1 {
+		t.Fatal("per-file resolution mutated the shared repository configuration")
+	}
+}
+
+func TestLinterActionPinningInvalidOverride(t *testing.T) {
+	level := ActionPinningLevel(99)
+	if _, err := NewLinter(io.Discard, &LinterOptions{ActionPinningLevel: &level}); err == nil {
+		t.Fatal("invalid API override was accepted")
+	}
+}
+
 func testFindAllWorkflowsInDir(subdir string) (string, []string, error) {
 	dir := filepath.Join("testdata", subdir)
 

@@ -49,6 +49,102 @@ func TestConfigActionPinning(t *testing.T) {
 	}
 }
 
+func TestConfigActionPinningAllowLists(t *testing.T) {
+	valid := `action-pinning:
+  allowed-owners: [my-org, Owner123]
+  allowed-actions: [owner/repo, my-org/repo.name-1_2]
+`
+	cfg, err := ParseConfig([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActionPinning.Level != ActionPinningLevelSemver || len(cfg.ActionPinning.AllowedOwners) != 2 || len(cfg.ActionPinning.AllowedActions) != 2 {
+		t.Fatalf("unexpected pinning config: %#v", cfg.ActionPinning)
+	}
+	for _, entry := range []string{
+		"{allowed-owners: ['owner/repo']}", "{allowed-owners: ['']}", "{allowed-owners: ['my org']}",
+		"{allowed-owners: ['*']}", "{allowed-owners: ['-owner']}", "{allowed-owners: [123]}",
+		"{allowed-owners: owner}", "{allowed-actions: [owner]}", "{allowed-actions: ['owner/']}",
+		"{allowed-actions: ['/repo']}", "{allowed-actions: ['owner/repo@v1']}",
+		"{allowed-actions: ['owner/repo/path']}", "{allowed-actions: ['owner/*']}",
+		"{allowed-actions: ['owner/re po']}", "{allowed-actions: ['owner/..']}",
+		"{allowed-actions: ['owner/.']}", "{allowed-actions: ['https://github.com/owner/repo']}",
+		"{allowed-actions: [true]}", "{allow-owners: [owner]}", "{level: bogus}",
+	} {
+		for _, prefix := range []string{"action-pinning: ", "paths:\n  '**/*.yml':\n    action-pinning: "} {
+			t.Run(prefix+entry, func(t *testing.T) {
+				if _, err := ParseConfig([]byte(prefix + entry)); err == nil {
+					t.Fatal("invalid global or path configuration was accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestConfigActionPinningForPath(t *testing.T) {
+	const source = `action-pinning:
+  level: commit-sha
+  allowed-owners: [global]
+  allowed-actions: [global/action]
+paths:
+  '**/*.yml':
+    action-pinning:
+      level: major-minor
+      allowed-owners: [broad]
+  '.github/workflows/ci.yml':
+    action-pinning:
+      level: semver
+      allowed-actions: [path/action]
+  '.github/workflows/allow.yml':
+    action-pinning:
+      allowed-actions: [allow/action]
+  '.github/workflows/other.yaml':
+    action-pinning:
+      allowed-actions: [other/action]
+`
+	cfg, err := ParseConfig([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path    string
+		level   ActionPinningLevel
+		owners  []string
+		actions []string
+	}{
+		{".github/workflows/ci.yml", ActionPinningLevelSemver, []string{"global", "broad"}, []string{"global/action", "path/action"}},
+		{".github/workflows/allow.yml", ActionPinningLevelMajorMinor, []string{"global", "broad"}, []string{"global/action", "allow/action"}},
+		{".github/workflows/other.yaml", ActionPinningLevelCommitSHA, []string{"global"}, []string{"global/action", "other/action"}},
+		{"unmatched.yaml", ActionPinningLevelCommitSHA, []string{"global"}, []string{"global/action"}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			for i := 0; i < 10; i++ {
+				got := cfg.ActionPinningForPath(tc.path)
+				if got.Level != tc.level {
+					t.Fatalf("wanted %v, got %v", tc.level, got.Level)
+				}
+				if diff := cmp.Diff(tc.owners, got.AllowedOwners); diff != "" {
+					t.Fatal(diff)
+				}
+				if diff := cmp.Diff(tc.actions, got.AllowedActions); diff != "" {
+					t.Fatal(diff)
+				}
+				got.AllowedOwners[0] = "mutated"
+				got.AllowedActions[0] = "mutated/action"
+			}
+		})
+	}
+	for _, entry := range []string{"{}", "{level: major-minor}", "{allowed-owners: [trusted]}"} {
+		cfg, err := ParseConfig([]byte("paths:\n  '**/*.yml':\n    action-pinning: " + entry))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ActionPinningForPath("ci.yml") == nil || cfg.ActionPinningForPath("ci.yaml") != nil {
+			t.Fatal("path-only config should enable pinning only for matching files")
+		}
+	}
+}
+
 func TestConfigParseSelfHostedRunnerOK(t *testing.T) {
 	testCases := []struct {
 		what   string

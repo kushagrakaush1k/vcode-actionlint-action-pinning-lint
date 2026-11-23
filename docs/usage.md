@@ -25,6 +25,18 @@ cat path/to/workflow.yaml | actionlint -
 
 To know all flags and options, see an output of `actionlint -h` or [the online command manual][cmd-manual].
 
+### Require pinned actions and reusable workflows
+
+Use `-action-pinning-level` to enable pinning checks at `major-minor`, `semver`, or `commit-sha` strictness:
+
+```sh
+actionlint -action-pinning-level=commit-sha
+```
+
+The flag overrides global and per-path levels while retaining every configured allow list. It also enables the rule
+without an `action-pinning` configuration section. Invalid levels are command-line errors. See
+[configuration](config.md) for allow lists and per-path settings.
+
 ### Ignore some errors
 
 To ignore some errors, `-ignore` option offers to filter errors by messages using regular expression. The option is repeatable.

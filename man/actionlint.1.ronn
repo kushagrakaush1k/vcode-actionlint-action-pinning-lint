@@ -49,6 +49,10 @@ with Go template syntax.
 
 ## FLAGS
 
+  * `-action-pinning-level` <LEVEL>:
+    Enable pinning checks for remote step actions and reusable workflows. Override global and
+    per-path levels with `major-minor`, `semver`, or `commit-sha`, preserving all configured allow lists.
+
   * `-color`:
     Always enable colorful output. This is useful to force colorful outputs
 

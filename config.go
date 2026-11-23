@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -49,6 +50,8 @@ type PathConfig struct {
 	// Ignore is a list of patterns. They are used for ignoring errors by matching to the error messages.
 	// It is similar to the "-ignore" command line option.
 	Ignore IgnorePatterns `yaml:"ignore"`
+	// ActionPinning enables or customizes pinning for matching workflow paths.
+	ActionPinning *ActionPinningConfig `yaml:"action-pinning"`
 }
 
 // ActionPinningLevel is the minimum strictness required for remote action and workflow refs.
@@ -80,24 +83,47 @@ func (level ActionPinningLevel) String() string {
 // UnmarshalYAML implements yaml.Unmarshaler.
 func (level *ActionPinningLevel) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind == yaml.ScalarNode && n.Tag == "!!str" {
-		switch n.Value {
-		case "major-minor":
-			*level = ActionPinningLevelMajorMinor
-			return nil
-		case "semver":
-			*level = ActionPinningLevelSemver
-			return nil
-		case "commit-sha":
-			*level = ActionPinningLevelCommitSHA
+		if l, err := parseActionPinningLevel(n.Value); err == nil {
+			*level = l
 			return nil
 		}
 	}
 	return fmt.Errorf("invalid action-pinning level %q at line:%d,col:%d: expected \"major-minor\", \"semver\", or \"commit-sha\"", n.Value, n.Line, n.Column)
 }
 
+func parseActionPinningLevel(value string) (ActionPinningLevel, error) {
+	switch value {
+	case "major-minor":
+		return ActionPinningLevelMajorMinor, nil
+	case "semver":
+		return ActionPinningLevelSemver, nil
+	case "commit-sha":
+		return ActionPinningLevelCommitSHA, nil
+	default:
+		return 0, fmt.Errorf("invalid action-pinning level %q: expected \"major-minor\", \"semver\", or \"commit-sha\"", value)
+	}
+}
+
 // ActionPinningConfig enables pinning checks and configures their minimum strictness.
 type ActionPinningConfig struct {
-	Level ActionPinningLevel `yaml:"level"`
+	Level          ActionPinningLevel `yaml:"level"`
+	AllowedOwners  []string           `yaml:"allowed-owners"`
+	AllowedActions []string           `yaml:"allowed-actions"`
+	levelSet       bool
+}
+
+var (
+	actionPinningOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$`)
+	actionPinningRepoPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+)
+
+func validActionPinningOwner(owner string) bool {
+	return actionPinningOwnerPattern.MatchString(owner)
+}
+
+func validActionPinningAction(action string) bool {
+	owner, repo, ok := strings.Cut(action, "/")
+	return ok && validActionPinningOwner(owner) && actionPinningRepoPattern.MatchString(repo) && repo != "." && repo != ".."
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler, defaulting an omitted level to semver.
@@ -110,8 +136,81 @@ func (cfg *ActionPinningConfig) UnmarshalYAML(n *yaml.Node) error {
 	if err := n.Decode(&c); err != nil {
 		return err
 	}
+	for i := 0; i < len(n.Content); i += 2 {
+		key, value := n.Content[i].Value, n.Content[i+1]
+		for value.Kind == yaml.AliasNode {
+			value = value.Alias
+		}
+		switch key {
+		case "level":
+			c.levelSet = value.Tag != "!!null"
+		case "allowed-owners", "allowed-actions":
+			if value.Tag == "!!null" {
+				continue
+			}
+			if value.Kind != yaml.SequenceNode {
+				return fmt.Errorf("action-pinning %q must be a sequence at line:%d,col:%d", key, value.Line, value.Column)
+			}
+			for _, item := range value.Content {
+				for item.Kind == yaml.AliasNode {
+					item = item.Alias
+				}
+				valid := validActionPinningAction(item.Value)
+				expected := "a clean owner/repo without a ref or path"
+				if key == "allowed-owners" {
+					valid = validActionPinningOwner(item.Value)
+					expected = "an owner name without a slash"
+				}
+				if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || !valid {
+					return fmt.Errorf("invalid action-pinning %q entry %q at line:%d,col:%d: expected %s", key, item.Value, item.Line, item.Column, expected)
+				}
+			}
+		default:
+			return fmt.Errorf("unexpected key %q in action-pinning at line:%d,col:%d", key, n.Content[i].Line, n.Content[i].Column)
+		}
+	}
 	*cfg = ActionPinningConfig(c)
 	return nil
+}
+
+// ActionPinningForPath combines global and matching path pinning settings. Explicit
+// path levels override the global level; overlapping path levels use the strictest.
+// All allow lists are merged. The returned configuration can be modified by the caller.
+func (cfg *Config) ActionPinningForPath(path string) *ActionPinningConfig {
+	if cfg == nil {
+		return nil
+	}
+	var result *ActionPinningConfig
+	merge := func(c *ActionPinningConfig) {
+		if result == nil {
+			result = &ActionPinningConfig{Level: ActionPinningLevelSemver}
+		}
+		result.AllowedOwners = append(result.AllowedOwners, c.AllowedOwners...)
+		result.AllowedActions = append(result.AllowedActions, c.AllowedActions...)
+	}
+	if cfg.ActionPinning != nil {
+		merge(cfg.ActionPinning)
+		result.Level = cfg.ActionPinning.Level
+	}
+	// Sort patterns so merged lists are deterministic despite map iteration order.
+	patterns := make([]string, 0, len(cfg.Paths))
+	for p := range cfg.Paths {
+		patterns = append(patterns, p)
+	}
+	sort.Strings(patterns)
+	hasPathLevel := false
+	for _, pattern := range patterns {
+		c := cfg.Paths[pattern].ActionPinning
+		if c == nil || !doublestar.MatchUnvalidated(pattern, filepath.ToSlash(path)) {
+			continue
+		}
+		merge(c)
+		if c.levelSet && (!hasPathLevel || c.Level > result.Level) {
+			result.Level = c.Level
+		}
+		hasPathLevel = hasPathLevel || c.levelSet
+	}
+	return result
 }
 
 // Config is configuration of actionlint. This struct instance is parsed from "actionlint.yaml"
@@ -210,6 +309,7 @@ config-variables: null
 
 # Pin remote actions and reusable workflows. null disables the check.
 # Use {} for the default semver level, or set level to major-minor, semver, or commit-sha.
+# allowed-owners lists owner names; allowed-actions lists exact owner/repo names.
 action-pinning: null
 
 # Configuration for file paths. The keys are glob patterns to match to file
@@ -219,6 +319,7 @@ action-pinning: null
 #
 # "ignore" is an array of regular expression patterns. Matched error messages
 # are ignored. This is similar to the "-ignore" command line option.
+# "action-pinning" configures a level and additional allow lists for matching files.
 paths:
 #  .github/workflows/**/*.yml:
 #    ignore: []

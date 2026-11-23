@@ -1793,7 +1793,15 @@ jobs:
     uses: owner/repo/.github/workflows/ci.yml@v1.2.3-rc.1 # OK
 ```
 
-Diagnostics point to the `uses:` value and have kind `action-pinning`. Setting `action-pinning: null` disables the rule.
+Diagnostics point to the `uses:` value, have kind `action-pinning`, and identify a step action or reusable workflow.
+For popular actions, errors suggest a concrete known version from the embedded database. If the database only knows
+a tag that does not meet the required level, the hint asks you to resolve that tag to a qualifying version or commit SHA.
+No versions or SHAs are invented or fetched remotely.
+
+Global and per-path `allowed-owners` and `allowed-actions` lists exempt matching repositories. All matching allow lists
+are combined. A path-specific `level` can enable the rule without a global section, and `-action-pinning-level` enables
+pinning and overrides all configured levels while preserving the allow lists. See [configuration](config.md) for precedence.
+Setting `action-pinning: null` leaves pinning off unless a matching path section or CLI flag enables it.
 Skipping a dynamic action name only skips this rule; the existing expression syntax and context checks still apply.
 The checks validate ref syntax offline, without resolving refs remotely. A version tag can move; use `commit-sha` when
 immutable pinning is required. Pinning does not extend the popular-action metadata database, so input/output checks

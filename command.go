@@ -139,6 +139,14 @@ func (cmd *Command) Main(args []string) int {
 	flags.BoolVar(&opts.Oneline, "oneline", false, "Use one line per one error. Useful for reading error messages from programs")
 	flags.StringVar(&opts.Format, "format", "", "Custom template to format error messages in Go template syntax. See the usage documentation for more details")
 	flags.StringVar(&opts.ConfigFile, "config-file", "", "File path to config file")
+	flags.Func("action-pinning-level", "Enable action pinning and override its level (major-minor, semver, commit-sha); preserve configured allow lists", func(value string) error {
+		level, err := parseActionPinningLevel(value)
+		if err != nil {
+			return err
+		}
+		opts.ActionPinningLevel = &level
+		return nil
+	})
 	flags.BoolVar(&initConfig, "init-config", false, "Generate default config file at .github/actionlint.yaml in current project")
 	flags.BoolVar(&noColor, "no-color", false, "Disable colorful output")
 	flags.BoolVar(&color, "color", false, "Always enable colorful output. This is useful to force colorful outputs")

@@ -77,6 +77,8 @@ type LinterOptions struct {
 	// ConfigFile is a path to config file. Empty string means no config file path is given. In
 	// the case, actionlint will try to read config from .github/actionlint.yaml.
 	ConfigFile string
+	// ActionPinningLevel enables pinning and overrides global and path levels, preserving allow lists.
+	ActionPinningLevel *ActionPinningLevel
 	// Format is a custom template to format error messages. It must follow Go Template format and
 	// contain at least one {{ }} placeholder. https://pkg.go.dev/text/template
 	Format string
@@ -96,19 +98,20 @@ type LinterOptions struct {
 
 // Linter is struct to lint workflow files.
 type Linter struct {
-	projects       *Projects
-	out            io.Writer
-	logOut         io.Writer
-	logLevel       LogLevel
-	oneline        bool
-	shellcheck     string
-	pyflakes       string
-	ignorePats     IgnorePatterns
-	stdin          string
-	defaultConfig  *Config
-	errFmt         *ErrorFormatter
-	cwd            string
-	onRulesCreated func([]Rule) []Rule
+	projects           *Projects
+	out                io.Writer
+	logOut             io.Writer
+	logLevel           LogLevel
+	oneline            bool
+	shellcheck         string
+	pyflakes           string
+	ignorePats         IgnorePatterns
+	stdin              string
+	defaultConfig      *Config
+	errFmt             *ErrorFormatter
+	cwd                string
+	onRulesCreated     func([]Rule) []Rule
+	actionPinningLevel *ActionPinningLevel
 }
 
 // NewLinter creates a new Linter instance.
@@ -116,6 +119,14 @@ type Linter struct {
 // want the outputs.
 // The opts parameter is LinterOptions instance which configures behavior of linting.
 func NewLinter(out io.Writer, opts *LinterOptions) (*Linter, error) {
+	var pinningLevel *ActionPinningLevel
+	if opts.ActionPinningLevel != nil {
+		value := *opts.ActionPinningLevel
+		if value > ActionPinningLevelCommitSHA {
+			return nil, fmt.Errorf("invalid action-pinning level %d", value)
+		}
+		pinningLevel = &value
+	}
 	level := LogLevelNone
 	if opts.Verbose {
 		level = LogLevelVerbose
@@ -193,6 +204,7 @@ func NewLinter(out io.Writer, opts *LinterOptions) (*Linter, error) {
 		formatter,
 		cwd,
 		opts.OnRulesCreated,
+		pinningLevel,
 	}
 
 	l.debug("Create a Linter instance with option %#v", opts)
@@ -537,6 +549,32 @@ func (l *Linter) check(
 		cfg = l.defaultConfig
 	} else if project != nil {
 		cfg = project.Config()
+	}
+	pinningPath := path
+	if project != nil {
+		absolutePath := path
+		if !filepath.IsAbs(absolutePath) {
+			absolutePath = filepath.Join(l.cwd, absolutePath)
+		}
+		if relativePath, err := filepath.Rel(absPath(project.RootDir()), absPath(absolutePath)); err == nil {
+			pinningPath = relativePath
+		}
+	}
+	pinning := cfg.ActionPinningForPath(pinningPath)
+	if l.actionPinningLevel != nil {
+		if pinning == nil {
+			pinning = &ActionPinningConfig{}
+		}
+		pinning.Level = *l.actionPinningLevel
+	}
+	if pinning != nil {
+		// Each file gets its own effective configuration; repository configuration is shared.
+		effective := Config{}
+		if cfg != nil {
+			effective = *cfg
+		}
+		effective.ActionPinning = pinning
+		cfg = &effective
 	}
 	if cfg != nil {
 		l.debug("Config: %#v", cfg)

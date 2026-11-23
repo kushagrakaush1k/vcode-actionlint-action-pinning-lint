@@ -83,6 +83,13 @@ func TestRuleActionPinning(t *testing.T) {
 					if e.Kind != "action-pinning" || e.Line != 12 || e.Column != 9 {
 						t.Fatalf("unexpected diagnostic location or kind: %v", e)
 					}
+					label := "step action"
+					if kind == "job" {
+						label = "reusable workflow"
+					}
+					if !strings.Contains(e.Message, label) {
+						t.Fatalf("diagnostic does not identify %s: %v", label, e)
+					}
 					message := tc.message
 					if message == "" {
 						message = fmt.Sprintf("does not meet action-pinning level %q", level)
@@ -93,6 +100,78 @@ func TestRuleActionPinning(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestRuleActionPinningAllowLists(t *testing.T) {
+	for _, tc := range []struct {
+		spec    string
+		allowed bool
+	}{
+		{"trusted/action@main", true},
+		{"TRUSTED/action/subpath@main", true},
+		{"trusted/action/.github/workflows/ci.yml@main", true},
+		{"other/repo@main", true},
+		{"OTHER/REPO/subpath@main", true},
+		{"other/repo/.github/workflows/ci.yml@main", true},
+		{"other/repo@${{ inputs.ref }}", true},
+		{"trusted-evil/action@main", false},
+		{"other/repo-extra@main", false},
+		{"other/unlisted@main", false},
+	} {
+		t.Run(tc.spec, func(t *testing.T) {
+			rule := NewRuleActionPinning()
+			rule.SetConfig(&Config{ActionPinning: &ActionPinningConfig{
+				Level: ActionPinningLevelCommitSHA, AllowedOwners: []string{"trusted"}, AllowedActions: []string{"other/repo"},
+			}})
+			u := &String{Value: tc.spec, Pos: &Pos{}}
+			if err := rule.VisitStep(&Step{Exec: &ExecAction{Uses: u}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := rule.VisitJobPre(&Job{WorkflowCall: &WorkflowCall{Uses: u}}); err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if tc.allowed {
+				want = 0
+			}
+			if errs := rule.Errs(); len(errs) != want {
+				t.Fatalf("wanted %d errors, got %v", want, errs)
+			}
+		})
+	}
+}
+
+func TestRuleActionPinningKnownVersionHint(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level ActionPinningLevel
+		hint  string
+	}{
+		{"actions/add-to-project", ActionPinningLevelSemver, `use known version "actions/add-to-project@v1.0.2"`},
+		{"actions/add-to-project", ActionPinningLevelCommitSHA, `resolve known version "actions/add-to-project@v1.0.2"`},
+		{"actions/checkout", ActionPinningLevelSemver, `resolve known version "actions/checkout@v6"`},
+		{"actions/cache/restore", ActionPinningLevelMajorMinor, `resolve known version "actions/cache/restore@v5"`},
+		{"unknown/action", ActionPinningLevelSemver, ""},
+	} {
+		t.Run(tc.name+"/"+tc.level.String(), func(t *testing.T) {
+			rule := NewRuleActionPinning()
+			rule.SetConfig(&Config{ActionPinning: &ActionPinningConfig{Level: tc.level}})
+			if err := rule.VisitStep(&Step{Exec: &ExecAction{Uses: &String{Value: tc.name + "@main", Pos: &Pos{}}}}); err != nil {
+				t.Fatal(err)
+			}
+			errs := rule.Errs()
+			if len(errs) != 1 {
+				t.Fatalf("wanted one error, got %v", errs)
+			}
+			if tc.hint == "" {
+				if strings.Contains(errs[0].Message, "known version") {
+					t.Fatal("invented a known version for an unknown action")
+				}
+			} else if !strings.Contains(errs[0].Message, tc.hint) {
+				t.Fatalf("wanted %q in %q", tc.hint, errs[0].Message)
+			}
+		})
 	}
 }
 
